@@ -4,7 +4,7 @@ import json
 import pandas as pd
 
 st.set_page_config(layout="wide")
-st.title("Stock Market Scans")
+st.title("Sector Scan")
 
 def fetch_data():
     url = "https://www.stockscans.in/api/company/market-scans/table"
