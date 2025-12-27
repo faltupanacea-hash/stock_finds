@@ -9,7 +9,7 @@ import announcements_utils
 st.set_page_config(layout="wide")
 st.title("Dashboard")
 
-tab1, tab2 = st.tabs(["Sector Rotation", "Corp Announcements"])
+tab1, tab2, tab3 = st.tabs(["Sector Rotation", "Corp Announcements","Screeners"])
 
 with tab1:
     st.header("Sector in Limelight")
