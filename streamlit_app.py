@@ -167,3 +167,9 @@ with tab2:
         )
     elif st.session_state['bse_fetched']:
         st.info("No matching announcements found for the selected date range.")
+
+with tab3:
+    st.header("Imp Screeners")
+    st.write("Quick access to Chartink screeners and dashboards:")
+    st.markdown("- [HVY Screener](https://chartink.com/screener/hvy-atfinallynitin)")
+    st.markdown("- [RS Dashboard](https://chartink.com/dashboard/159858)")
