@@ -13,6 +13,10 @@ tab1, tab2, tab3 = st.tabs(["Sector Rotation", "Corp Announcements","Screeners"]
 
 with tab1:
     st.header("Sector in Limelight")
+    st.text("Outperforming → Strength is visible and persistent")
+    st.text("Accumulating → Early signs of strength are emerging")
+    st.text("Consolidating → Momentum is slowing down")
+    st.text("Underperforming → Persistent weakness remains")
     
     def fetch_data():
         url = "https://www.stockscans.in/api/company/market-scans/table"
