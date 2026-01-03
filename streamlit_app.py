@@ -134,12 +134,25 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
                 st.error(f"Error: {e}")
 
     if st.session_state[data_key] is not None:
-        df = st.session_state[data_key]
+        df = st.session_state[data_key].copy() # Copy to avoid mutation issues
+        
+        column_config = {
+            "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")
+        }
+
+        # Handle ID Column Hyperlinking
+        id_col = next((c for c in df.columns if c.lower() in ["companyid", "symbol", "id"]), None)
+        if id_col:
+            # Transform the ID column values into clickable TradingView URLs
+            df[id_col] = "https://in.tradingview.com/chart/?symbol=" + df[id_col].astype(str)
+            column_config[id_col] = st.column_config.LinkColumn(id_col, display_text=r"symbol=(.*)")
+            
         status_col = next((c for c in df.columns if c.lower() == "status"), None)
         display_df = df.style.map(get_status_color, subset=[status_col]) if status_col else df
+        
         event = st.dataframe(
             display_df,
-            column_config={"historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")},
+            column_config=column_config,
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row", key=f"{data_key}_table"
         )
         if event.selection.rows:
@@ -188,7 +201,7 @@ def render_constituents_tab(header, selection_key, scan_type):
             if "TV Link" in final_df.columns: cols.append("TV Link")
             cols += [c for c in final_df.columns if c not in cols]
             st.dataframe(final_df[cols], use_container_width=True, hide_index=True, key=f"{selection_key}_details_table",
-                column_config={"historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium"), "TV Link": st.column_config.LinkColumn("TradingView", display_text="Open Chart")})
+                column_config={"historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium"), "TV Link": st.column_config.LinkColumn("TradingView", display_text=r"symbol=(.*)")})
     else:
         st.info("Select items in the rotation tab first.")
 
