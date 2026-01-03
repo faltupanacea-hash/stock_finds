@@ -212,7 +212,9 @@ with tab2:
         st.info("No matching announcements found for the selected date range.")
 
 with tab3:
-    st.header("Screeners")
+    st.header("Imp Screeners")
     st.write("Quick access to Chartink screeners and dashboards:")
-    st.markdown("- [Heavy Screener](https://chartink.com/screener/hvy-atfinallynitin)")
-    st.markdown("- [Dashboard](https://chartink.com/dashboard/159858)")
+    st.markdown("- [HVY Screener](https://chartink.com/screener/hvy-atfinallynitin)")
+    st.markdown("- [MARS stocks](https://chartink.com/dashboard/159858)")
+    st.markdown("- [Market Breadth Check1](https://chartink.com/dashboard/163999)")
+    st.markdown("- [Market Breadth Check2](https://chartink.com/dashboard/149096)")
