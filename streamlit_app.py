@@ -169,6 +169,11 @@ def render_constituents_tab(header, selection_key, scan_type):
 
         if all_dfs:
             final_df = pd.concat(all_dfs, ignore_index=True)
+            
+            # Default sort by score descending
+            if "score" in final_df.columns:
+                final_df = final_df.sort_values(by="score", ascending=False)
+                
             id_col = next((c for c in final_df.columns if c.lower() in ["companyid", "symbol", "id"]), None)
             if id_col:
                 ids_string = ", ".join(map(str, final_df[id_col].dropna().unique().tolist()))
