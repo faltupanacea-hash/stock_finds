@@ -25,8 +25,12 @@ STOCKSCANS_COOKIE = get_auth_cookie()
 states = {
     "sector_data": None,
     "selected_sectors": [],
+    "interested_sectors": [],
+    "cached_cons_sector": None, # (selection_key_hash, dataframe)
     "index_data": None,
-    "selected_indices": []
+    "selected_indices": [],
+    "interested_indices": [],
+    "cached_cons_index": None
 }
 for key, val in states.items():
     if key not in st.session_state:
@@ -80,6 +84,36 @@ def fetch_constituents(name, scan_type="Industry"):
         st.error(f"Error fetching constituents for {name}: {e}")
         return None
 
+@st.cache_data(ttl=3600)
+def get_fno_list():
+    """Fetches the list of symbols in the Futures segment from NSE."""
+    url = "https://www.nseindia.com/api/underlying-information"
+    headers = {
+        'accept': '*/*',
+        'accept-language': 'en-US,en;q=0.9',
+        'referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
+    }
+    try:
+        session = requests.Session()
+        # Mimic browser session by hitting home page first
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        response = session.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        symbols = set()
+        if 'data' in data and isinstance(data['data'], dict):
+            underlying = data['data'].get('UnderlyingList', [])
+            indices = data['data'].get('IndexList', [])
+            for item in underlying + indices:
+                if 'symbol' in item:
+                    symbols.add(item['symbol'])
+        return symbols
+    except Exception as e:
+        st.sidebar.error(f"Error fetching NSE F&O list: {e}")
+        return set()
+
 def get_status_color(val):
     if not isinstance(val, str): return ""
     v = val.lower()
@@ -87,6 +121,15 @@ def get_status_color(val):
     if "accumulating" in v: return "background-color: #cce5ff; color: #004085"
     if "consolidating" in v: return "background-color: #ffe5cc; color: #856404"
     if "underperforming" in v: return "background-color: #ffcccc; color: #cc0000"
+    return ""
+
+def highlight_fno(val, fno_list):
+    """Styles a cell green if the symbol is in the F&O list."""
+    if not isinstance(val, str): return ""
+    # Extract symbol from 'NSE:SYMBOL' or similar
+    symbol = val.split(':')[-1]
+    if symbol in fno_list:
+        return "background-color: #d1f7d1; color: #006600; font-weight: bold;"
     return ""
 
 def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
@@ -148,7 +191,18 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
             column_config[id_col] = st.column_config.LinkColumn(id_col, display_text=r"symbol=(.*)")
             
         status_col = next((c for c in df.columns if c.lower() == "status"), None)
-        display_df = df.style.map(get_status_color, subset=[status_col]) if status_col else df
+        
+        # Prepare display dataframe with F&O highlighting
+        fno_list = get_fno_list()
+        if id_col:
+            # Apply styling to the ID column (which now contains URLs)
+            display_df = df.style.map(get_status_color, subset=[status_col] if status_col else [])
+            display_df = display_df.map(
+                lambda x: highlight_fno(x.split('=')[-1] if isinstance(x, str) else x, fno_list),
+                subset=[id_col]
+            )
+        else:
+            display_df = df.style.map(get_status_color, subset=[status_col] if status_col else [])
         
         event = st.dataframe(
             display_df,
@@ -156,9 +210,18 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row", key=f"{data_key}_table"
         )
         if event.selection.rows:
-            st.session_state[selection_key] = df.iloc[event.selection.rows]["name"].tolist()
+            new_selection = df.iloc[event.selection.rows]["name"].tolist()
+            if new_selection != st.session_state[selection_key]:
+                st.session_state[selection_key] = new_selection
+                # Clear interested list when parent selection changes
+                # data_key is 'sector_data' or 'index_data'
+                prefix = data_key.split('_')[0] # 'sector' or 'index'
+                st.session_state[f"interested_{prefix}s"] = []
         else:
-            st.session_state[selection_key] = []
+            if st.session_state[selection_key]:
+                st.session_state[selection_key] = []
+                prefix = data_key.split('_')[0]
+                st.session_state[f"interested_{prefix}s"] = []
     else:
         st.info(f"Click 'Fetch {tab_name} Data' to load.")
 
@@ -166,27 +229,38 @@ def render_constituents_tab(header, selection_key, scan_type):
     st.header(header)
     selected = st.session_state.get(selection_key, [])
     if selected:
-        st.write(f"Aggregating data for: {', '.join(selected)}")
-        all_dfs = []
-        progress = st.progress(0)
-        for i, name in enumerate(selected):
-            data = fetch_constituents(name, scan_type=scan_type)
-            if data and "table" in data:
-                sdf = pd.DataFrame(data["table"])
-                if "historicScores" in sdf.columns:
-                    sdf["historicScores"] = sdf["historicScores"].apply(clean_scores)
-                sdf["Source Name"] = name
-                all_dfs.append(sdf)
-            progress.progress((i + 1) / len(selected))
-        progress.empty()
-
-        if all_dfs:
-            final_df = pd.concat(all_dfs, ignore_index=True)
+        # --- Caching Mechanism ---
+        cache_key = f"cached_cons_{selection_key.split('_')[1]}" # sector or index
+        selection_hash = ",".join(sorted(selected))
+        
+        cached_data = st.session_state.get(cache_key)
+        if cached_data and cached_data[0] == selection_hash:
+            final_df = cached_data[1]
+        else:
+            st.write(f"Aggregating data for: {', '.join(selected)}")
+            all_dfs = []
+            progress = st.progress(0)
+            for i, name in enumerate(selected):
+                data = fetch_constituents(name, scan_type=scan_type)
+                if data and "table" in data:
+                    sdf = pd.DataFrame(data["table"])
+                    if "historicScores" in sdf.columns:
+                        sdf["historicScores"] = sdf["historicScores"].apply(clean_scores)
+                    sdf["Source Name"] = name
+                    all_dfs.append(sdf)
+                progress.progress((i + 1) / len(selected))
+            progress.empty()
             
-            # Default sort by score descending
-            if "score" in final_df.columns:
-                final_df = final_df.sort_values(by="score", ascending=False)
-                
+            if all_dfs:
+                final_df = pd.concat(all_dfs, ignore_index=True)
+                # Default sort by score descending
+                if "score" in final_df.columns:
+                    final_df = final_df.sort_values(by="score", ascending=False)
+                st.session_state[cache_key] = (selection_hash, final_df)
+            else:
+                final_df = pd.DataFrame()
+
+        if not final_df.empty:
             id_col = next((c for c in final_df.columns if c.lower() in ["companyid", "symbol", "id"]), None)
             if id_col:
                 ids_string = ", ".join(map(str, final_df[id_col].dropna().unique().tolist()))
@@ -200,8 +274,68 @@ def render_constituents_tab(header, selection_key, scan_type):
             cols = ["Source Name"]
             if "TV Link" in final_df.columns: cols.append("TV Link")
             cols += [c for c in final_df.columns if c not in cols]
-            st.dataframe(final_df[cols], use_container_width=True, hide_index=True, key=f"{selection_key}_details_table",
-                column_config={"historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium"), "TV Link": st.column_config.LinkColumn("TradingView", display_text=r"symbol=(.*)")})
+            
+            # Prepare display dataframe with F&O highlighting
+            fno_list = get_fno_list()
+            display_df = final_df[cols]
+            
+            if id_col:
+                # Apply styling to the ID column
+                styled_df = display_df.style.map(
+                    lambda x: highlight_fno(x, fno_list),
+                    subset=[id_col] if id_col in cols else []
+                )
+            else:
+                styled_df = display_df
+
+            event = st.dataframe(
+                styled_df, 
+                use_container_width=True, 
+                hide_index=True, 
+                key=f"{selection_key}_details_table",
+                on_select="rerun", # Keep "rerun" but data is now cached so it's fast
+                selection_mode="multi-row",
+                column_config={
+                    "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium"), 
+                    "TV Link": st.column_config.LinkColumn("TradingView", display_text=r"symbol=(.*)")
+                }
+            )
+
+            # --- FEATURE 3: Interested List (Manual Trigger) ---
+            interested_key = f"interested_{selection_key.split('_')[1]}"
+            
+            if st.button("Add Selected to Interested List", key=f"btn_{selection_key}"):
+                if event.selection.rows:
+                    selected_indices = event.selection.rows
+                    # Extract raw IDs (before hyperlinking if needed, but here we just need the values)
+                    # Note: final_df still has the raw ID values if we haven't overwritten them 
+                    # in a way that breaks extraction. The render_constituents_tab logic 
+                    # doesn't hyperlink the IDs in final_df[cols] display as URLs like the rotation tabs do.
+                    # It creates a separate "TV Link" column.
+                    st.session_state[interested_key] = final_df.iloc[selected_indices][id_col].dropna().unique().tolist()
+                else:
+                    st.warning("Please select rows in the table above first.")
+
+            interested_ids = st.session_state.get(interested_key, [])
+            if interested_ids:
+                interested_string = ", ".join(map(str, interested_ids))
+                st.subheader("Interested List")
+                interested_copy_html = f"""
+                <button id="copyInterestedBtn" style="background-color:#28a745;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Copy Interested</button>
+                <script>
+                document.getElementById('copyInterestedBtn').onclick = function() {{
+                    navigator.clipboard.writeText('{interested_string}').then(function() {{
+                        const b = document.getElementById('copyInterestedBtn');
+                        b.innerText = 'Copied!';
+                        setTimeout(function() {{
+                            b.innerText = 'Copy Interested';
+                        }}, 2000);
+                    }});
+                }};
+                </script>
+                """
+                st.components.v1.html(interested_copy_html, height=50)
+                st.code(interested_string, language="")
     else:
         st.info("Select items in the rotation tab first.")
 
