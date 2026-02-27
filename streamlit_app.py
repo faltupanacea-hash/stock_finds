@@ -86,8 +86,9 @@ def fetch_constituents(name, scan_type="Industry"):
 
 @st.cache_data(ttl=3600)
 def get_fno_list():
-    """Fetches the list of symbols in the Futures segment from NSE."""
+    """Fetches the list of symbols in the Futures segment from NSE with local fallback."""
     url = "https://www.nseindia.com/api/underlying-information"
+    backup_file = "nse_fno_backup.json"
     headers = {
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -101,19 +102,26 @@ def get_fno_list():
     import time
     max_retries = 3
     
+    symbols = set()
+    
+    # helper to parse symbols from json data
+    def parse_symbols(data):
+        syms = set()
+        if 'data' in data and isinstance(data['data'], dict):
+            underlying = data['data'].get('UnderlyingList', [])
+            indices = data['data'].get('IndexList', [])
+            for item in underlying + indices:
+                if 'symbol' in item:
+                    syms.add(item['symbol'])
+        return syms
+
+    # Attempt Live Fetch
     for attempt in range(max_retries):
         try:
             session = requests.Session()
             session.headers.update(headers)
-            
-            # Step 1: Hit home page to get cookies
-            base_url = "https://www.nseindia.com"
-            session.get(base_url, timeout=10)
-            
-            # Step 2: Small pause to mimic human behavior
+            session.get("https://www.nseindia.com", timeout=10)
             time.sleep(1.0)
-            
-            # Step 3: Fetch API data
             response = session.get(url, timeout=10)
             
             if response.status_code == 403 and attempt < max_retries - 1:
@@ -122,22 +130,24 @@ def get_fno_list():
                 
             response.raise_for_status()
             data = response.json()
+            return parse_symbols(data)
             
-            symbols = set()
-            if 'data' in data and isinstance(data['data'], dict):
-                underlying = data['data'].get('UnderlyingList', [])
-                indices = data['data'].get('IndexList', [])
-                for item in underlying + indices:
-                    if 'symbol' in item:
-                        symbols.add(item['symbol'])
-            return symbols
-            
-        except Exception as e:
+        except Exception:
             if attempt < max_retries - 1:
                 time.sleep(2 * (attempt + 1))
                 continue
-            st.sidebar.error(f"Error fetching NSE F&O list: {e}")
-            return set()
+            break
+    
+    # Fallback to local file
+    try:
+        if os.path.exists(backup_file):
+            with open(backup_file, "r") as f:
+                data = json.load(f)
+                st.sidebar.info("Using cached NSE F&O list (API blocked).")
+                return parse_symbols(data)
+    except Exception as e:
+        st.sidebar.error(f"Error loading NSE fallback: {e}")
+        
     return set()
 
 def get_status_color(val):
