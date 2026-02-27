@@ -112,7 +112,8 @@ def get_fno_list():
             indices = data['data'].get('IndexList', [])
             for item in underlying + indices:
                 if 'symbol' in item:
-                    syms.add(item['symbol'])
+                    # Clean and normalize symbol
+                    syms.add(item['symbol'].strip().upper())
         return syms
 
     # Attempt Live Fetch
@@ -161,10 +162,14 @@ def get_status_color(val):
 
 def highlight_fno(val, fno_list):
     """Styles a cell green if the symbol is in the F&O list."""
-    if not isinstance(val, str): return ""
-    # Extract symbol from 'NSE:SYMBOL' or similar
-    symbol = val.split(':')[-1]
-    if symbol in fno_list:
+    if not isinstance(val, str) or not val: return ""
+    
+    # Extract symbol from URL or 'NSE:SYMBOL'
+    # URLs look like: https://in.tradingview.com/chart/?symbol=360ONE
+    # Or raw symbols: 360ONE
+    raw_symbol = val.split('=')[-1].split(':')[-1].strip().upper()
+    
+    if raw_symbol in fno_list:
         return "background-color: #d1f7d1; color: #006600; font-weight: bold;"
     return ""
 
@@ -234,7 +239,7 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
             # Apply styling to the ID column (which now contains URLs)
             display_df = df.style.map(get_status_color, subset=[status_col] if status_col else [])
             display_df = display_df.map(
-                lambda x: highlight_fno(x.split('=')[-1] if isinstance(x, str) else x, fno_list),
+                lambda x: highlight_fno(x, fno_list),
                 subset=[id_col]
             )
         else:
