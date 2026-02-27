@@ -89,30 +89,56 @@ def get_fno_list():
     """Fetches the list of symbols in the Futures segment from NSE."""
     url = "https://www.nseindia.com/api/underlying-information"
     headers = {
-        'accept': '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        'referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Pragma': 'no-cache',
+        'Referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    try:
-        session = requests.Session()
-        # Mimic browser session by hitting home page first
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
-        response = session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        symbols = set()
-        if 'data' in data and isinstance(data['data'], dict):
-            underlying = data['data'].get('UnderlyingList', [])
-            indices = data['data'].get('IndexList', [])
-            for item in underlying + indices:
-                if 'symbol' in item:
-                    symbols.add(item['symbol'])
-        return symbols
-    except Exception as e:
-        st.sidebar.error(f"Error fetching NSE F&O list: {e}")
-        return set()
+    
+    import time
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            session = requests.Session()
+            session.headers.update(headers)
+            
+            # Step 1: Hit home page to get cookies
+            base_url = "https://www.nseindia.com"
+            session.get(base_url, timeout=10)
+            
+            # Step 2: Small pause to mimic human behavior
+            time.sleep(1.0)
+            
+            # Step 3: Fetch API data
+            response = session.get(url, timeout=10)
+            
+            if response.status_code == 403 and attempt < max_retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+                
+            response.raise_for_status()
+            data = response.json()
+            
+            symbols = set()
+            if 'data' in data and isinstance(data['data'], dict):
+                underlying = data['data'].get('UnderlyingList', [])
+                indices = data['data'].get('IndexList', [])
+                for item in underlying + indices:
+                    if 'symbol' in item:
+                        symbols.add(item['symbol'])
+            return symbols
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            st.sidebar.error(f"Error fetching NSE F&O list: {e}")
+            return set()
+    return set()
 
 def get_status_color(val):
     if not isinstance(val, str): return ""
