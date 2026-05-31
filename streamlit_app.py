@@ -90,13 +90,17 @@ def get_fno_list():
     url = "https://www.nseindia.com/api/underlying-information"
     backup_file = "nse_fno_backup.json"
     headers = {
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Pragma': 'no-cache',
-        'Referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'accept': '*/*',
+        'accept-language': 'en-US,en;q=0.9,en-IN;q=0.8',
+        'priority': 'u=1, i',
+        'referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
+        'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Microsoft Edge";v="144"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0'
     }
     
     import time
@@ -219,6 +223,23 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
 
     if st.session_state[data_key] is not None:
         df = st.session_state[data_key].copy() # Copy to avoid mutation issues
+        
+        # Filter logic if it's the Index Rotation tab
+        if scan_type == "Index":
+            # Add a text input or checkbox for filtering
+            col_f1, col_f2 = st.columns([3, 1])
+            with col_f1:
+                filter_query = st.text_input("Filter by Index Name (use '/' or '|' or ',' for multiple, e.g. BSE/NIFTY)", value="NIFTY", key="index_name_filter_query")
+            with col_f2:
+                apply_filter = st.checkbox("Apply Filter", value=True, key="index_name_filter_apply")
+                
+            if apply_filter and filter_query:
+                # Split the filter_query and strip whitespace
+                patterns = [p.strip().lower() for p in filter_query.replace('|', '/').replace(',', '/').split('/') if p.strip()]
+                if patterns:
+                    # Filter rows where name contains any of the patterns
+                    mask = df["name"].astype(str).str.lower().apply(lambda x: any(pat in x for pat in patterns))
+                    df = df[mask]
         
         column_config = {
             "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")
