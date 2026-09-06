@@ -90,17 +90,13 @@ def get_fno_list():
     url = "https://www.nseindia.com/api/underlying-information"
     backup_file = "nse_fno_backup.json"
     headers = {
-        'accept': '*/*',
-        'accept-language': 'en-US,en;q=0.9,en-IN;q=0.8',
-        'priority': 'u=1, i',
-        'referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
-        'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Microsoft Edge";v="144"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0'
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Pragma': 'no-cache',
+        'Referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     import time
@@ -213,9 +209,16 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
                     if "historicScores" in df.columns:
                         df["historicScores"] = df["historicScores"].apply(clean_scores)
                     if "score" in df.columns:
-                        df = df.sort_values(by="score", ascending=False)
+                        df["score"] = pd.to_numeric(df["score"], errors="coerce")
+                        df = df.sort_values(by="score", ascending=False).reset_index(drop=True)
                     st.session_state[data_key] = df
-                    st.session_state[selection_key] = []
+
+                    cb_key = f"{data_key}_select_gt_70"
+                    if st.session_state.get(cb_key):
+                        gt70_names = df[df["score"] > 70]["name"].tolist() if "score" in df.columns else []
+                        st.session_state[selection_key] = gt70_names
+                    else:
+                        st.session_state[selection_key] = []
                 else:
                     st.warning("No data found.")
             except Exception as e:
@@ -223,24 +226,36 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
 
     if st.session_state[data_key] is not None:
         df = st.session_state[data_key].copy() # Copy to avoid mutation issues
-        
-        # Filter logic if it's the Index Rotation tab
-        if scan_type == "Index":
-            # Add a text input or checkbox for filtering
-            col_f1, col_f2 = st.columns([3, 1])
-            with col_f1:
-                filter_query = st.text_input("Filter by Index Name (use '/' or '|' or ',' for multiple, e.g. BSE/NIFTY)", value="NIFTY", key="index_name_filter_query")
-            with col_f2:
-                apply_filter = st.checkbox("Apply Filter", value=True, key="index_name_filter_apply")
-                
-            if apply_filter and filter_query:
-                # Split the filter_query and strip whitespace
-                patterns = [p.strip().lower() for p in filter_query.replace('|', '/').replace(',', '/').split('/') if p.strip()]
-                if patterns:
-                    # Filter rows where name contains any of the patterns
-                    mask = df["name"].astype(str).str.lower().apply(lambda x: any(pat in x for pat in patterns))
-                    df = df[mask]
-        
+        if "score" in df.columns:
+            df["score"] = pd.to_numeric(df["score"], errors="coerce")
+
+        cb_key = f"{data_key}_select_gt_70"
+        name_filter_key = f"{data_key}_name_filter"
+
+        c_cb, c_filter, c_info = st.columns([1, 1, 2])
+        with c_cb:
+            select_gt_70 = st.checkbox("Select all with score > 70", key=cb_key)
+        with c_filter:
+            name_filter = st.text_input("Filter by Name", key=name_filter_key, placeholder="Search name...")
+
+        if name_filter.strip():
+            name_col = "name" if "name" in df.columns else next((c for c in df.columns if c.lower() == "name"), None)
+            if name_col:
+                df = df[df[name_col].astype(str).str.contains(name_filter.strip(), case=False, na=False)].reset_index(drop=True)
+
+        if select_gt_70:
+            if "score" in df.columns:
+                gt70_names = df[df["score"] > 70]["name"].tolist()
+                if st.session_state.get(selection_key) != gt70_names:
+                    st.session_state[selection_key] = gt70_names
+                    prefix = data_key.split('_')[0]
+                    st.session_state[f"interested_{prefix}s"] = []
+
+        current_selected = st.session_state.get(selection_key, [])
+        if current_selected:
+            with c_info:
+                st.caption(f"Selected ({len(current_selected)}): {', '.join(current_selected)}")
+
         column_config = {
             "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")
         }
@@ -271,21 +286,22 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
             column_config=column_config,
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row", key=f"{data_key}_table"
         )
-        if event.selection.rows:
-            new_selection = df.iloc[event.selection.rows]["name"].tolist()
-            if new_selection != st.session_state[selection_key]:
-                st.session_state[selection_key] = new_selection
-                # Clear interested list when parent selection changes
-                # data_key is 'sector_data' or 'index_data'
-                prefix = data_key.split('_')[0] # 'sector' or 'index'
-                st.session_state[f"interested_{prefix}s"] = []
-        else:
-            if st.session_state[selection_key]:
-                st.session_state[selection_key] = []
-                prefix = data_key.split('_')[0]
-                st.session_state[f"interested_{prefix}s"] = []
+
+        if not select_gt_70:
+            if event.selection.rows:
+                new_selection = df.iloc[event.selection.rows]["name"].tolist()
+                if new_selection != st.session_state[selection_key]:
+                    st.session_state[selection_key] = new_selection
+                    prefix = data_key.split('_')[0]
+                    st.session_state[f"interested_{prefix}s"] = []
+            else:
+                if st.session_state[selection_key]:
+                    st.session_state[selection_key] = []
+                    prefix = data_key.split('_')[0]
+                    st.session_state[f"interested_{prefix}s"] = []
     else:
         st.info(f"Click 'Fetch {tab_name} Data' to load.")
+
 
 def render_constituents_tab(header, selection_key, scan_type):
     st.header(header)
@@ -423,9 +439,21 @@ with t_ann:
     bse_df = st.session_state['bse_data']
     if not bse_df.empty:
         st.success(f"Found {len(bse_df)} announcements.")
-        types = ["All"] + sorted(bse_df['TYPE'].unique().tolist())
-        sel_type = st.selectbox("Filter Type", types)
+        
+        f_c1, f_c2 = st.columns([1, 2])
+        with f_c1:
+            types = ["All"] + sorted(bse_df['TYPE'].unique().tolist())
+            sel_type = st.selectbox("Filter Type", types)
+        with f_c2:
+            search_query = st.text_input("Filter Announcements by Keyword", placeholder="Search company, headline, subject, attachment...")
+        
         disp_bse = bse_df if sel_type == "All" else bse_df[bse_df['TYPE'] == sel_type]
+        if search_query.strip():
+            sq = search_query.strip().lower()
+            disp_bse = disp_bse[
+                disp_bse.astype(str).apply(lambda row: row.str.lower().str.contains(sq).any(), axis=1)
+            ]
+            
         dl_path = st.text_input("Local Download Folder Path")
         if st.button("Download PDFs"):
             if dl_path:
@@ -435,6 +463,7 @@ with t_ann:
                 if count > 0: st.success(f"Downloaded {count} files.")
                 for e in errs: st.error(e)
             else: st.error("Enter path.")
+        
         st.dataframe(disp_bse, column_config={"LINK": st.column_config.LinkColumn("PDF", display_text="Open")}, use_container_width=True, hide_index=True, key="bse_table")
     elif st.session_state.get('bse_fetched'): st.info("No announcements found.")
 
