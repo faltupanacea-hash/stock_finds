@@ -406,14 +406,145 @@ def render_constituents_tab(header, selection_key, scan_type):
     else:
         st.info("Select items in the rotation tab first.")
 
+def fetch_scan_matched_stocks():
+    """Fetches most scan-matched stocks from stockscans.in API."""
+    url = "https://www.stockscans.in/api/home/most-scan-matched-stocks"
+    headers = {
+        'accept': 'application/json',
+        'accept-language': 'en-US,en;q=0.9,hi;q=0.8',
+        'content-type': 'application/json',
+        'priority': 'u=1, i',
+        'referer': 'https://www.stockscans.in/',
+        'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+        'x-sync-source': '97dwuu6hmu48c2tr',
+        'Cookie': STOCKSCANS_COOKIE
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        st.error(f"Error fetching most scan-matched stocks: {e}")
+        return None
+
+def render_scan_match_tab():
+    st.header("Most Scan-Matched Stocks")
+    st.caption("Displays stocks matching the highest number of scan filters on StockScans.")
+
+    if 'scan_match_data' not in st.session_state:
+        st.session_state['scan_match_data'] = None
+
+    if st.button("Fetch SCAN MATCH Data"):
+        with st.spinner("Fetching most scan-matched stocks..."):
+            data = fetch_scan_matched_stocks()
+            if data and "companies" in data:
+                companies = data["companies"]
+                rows = []
+                for c in companies:
+                    pop_scans = [s.get('scanName') for s in c.get('popularScans', []) if s.get('scanName')]
+                    saved_scans = [s.get('scanName') for s in c.get('savedScans', []) if s.get('scanName')]
+                    all_scans = list(dict.fromkeys(pop_scans + saved_scans))
+                    rows.append({
+                        'companyId': c.get('companyId', ''),
+                        'Name': c.get('Name', ''),
+                        'matchCount': pd.to_numeric(c.get('matchCount', 0), errors='coerce'),
+                        'Matched Scans': ", ".join(all_scans),
+                        'allScansList': all_scans
+                    })
+                df = pd.DataFrame(rows)
+                if "matchCount" in df.columns:
+                    df = df.sort_values(by="matchCount", ascending=False).reset_index(drop=True)
+                st.session_state['scan_match_data'] = df
+            else:
+                st.warning("No data returned or invalid response structure.")
+
+    df = st.session_state.get('scan_match_data')
+    if df is not None and not df.empty:
+        df_display = df.copy()
+
+        # Filters row
+        f_col1, f_col2, f_col3 = st.columns([1, 1, 1])
+        with f_col1:
+            name_filter = st.text_input("Filter by Name / Symbol", key="sm_name_filter", placeholder="Search symbol or name...")
+        with f_col2:
+            all_scan_names = sorted(list(set([scan for sublist in df_display['allScansList'] for scan in sublist])))
+            selected_scans = st.multiselect("Filter by Scan Name", all_scan_names, key="sm_scan_filter")
+        with f_col3:
+            max_matches = int(df_display['matchCount'].max()) if 'matchCount' in df_display.columns else 1
+            min_matches = st.number_input("Min Match Count", min_value=1, max_value=max_matches if max_matches > 1 else 100, value=1, key="sm_min_match")
+
+        # Apply Filters
+        if name_filter.strip():
+            query = name_filter.strip().lower()
+            df_display = df_display[
+                df_display['companyId'].astype(str).str.lower().str.contains(query) |
+                df_display['Name'].astype(str).str.lower().str.contains(query)
+            ]
+
+        if selected_scans:
+            df_display = df_display[
+                df_display['allScansList'].apply(lambda lst: any(s in lst for s in selected_scans))
+            ]
+
+        if min_matches > 1:
+            df_display = df_display[df_display['matchCount'] >= min_matches]
+
+        df_display = df_display.reset_index(drop=True)
+
+        # Copy Stock Identifiers
+        if not df_display.empty and 'companyId' in df_display.columns:
+            raw_ids = df_display['companyId'].apply(lambda x: str(x).split(':')[-1].strip()).dropna().unique().tolist()
+            ids_string = ", ".join(raw_ids)
+            st.subheader("Copy Stock Identifiers")
+            copy_html = f"""<button id="copySmBtn" style="background-color:#007bff;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Copy Tickers ({len(raw_ids)})</button>
+            <script>document.getElementById('copySmBtn').onclick=function(){{navigator.clipboard.writeText('{ids_string}').then(function(){{const b=document.getElementById('copySmBtn');b.innerText='Copied!';b.style.backgroundColor='#28a745';setTimeout(function(){{b.innerText='Copy Tickers ({len(raw_ids)})';b.style.backgroundColor='#007bff';}},2000);}});}};</script>"""
+            st.components.v1.html(copy_html, height=50)
+
+        cols_to_show = ['companyId', 'Name', 'matchCount', 'Matched Scans']
+        grid_df = df_display[cols_to_show].copy()
+
+        grid_df['companyId'] = "https://in.tradingview.com/chart/?symbol=" + grid_df['companyId'].astype(str)
+
+        column_config = {
+            "companyId": st.column_config.LinkColumn("TradingView Link", display_text=r"symbol=(.*)"),
+            "Name": st.column_config.TextColumn("Company Name"),
+            "matchCount": st.column_config.NumberColumn("Scan Matches"),
+            "Matched Scans": st.column_config.TextColumn("Matched Scan Filters", width="large")
+        }
+
+        fno_list = get_fno_list()
+        styled_df = grid_df.style.map(
+            lambda x: highlight_fno(x, fno_list),
+            subset=["companyId"]
+        )
+
+        st.dataframe(
+            styled_df,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            key="scan_match_table"
+        )
+    elif st.session_state.get('scan_match_data') is not None:
+        st.info("No matching stocks found for the selected filters.")
+    else:
+        st.info("Click 'Fetch SCAN MATCH Data' to load the latest scan-matched stocks.")
+
 # --- Tabs ---
-tabs = st.tabs(["Sector Rotation", "Sector Constituents", "Index Rotation", "Index Constituents", "Corp Announcements", "Screeners"])
-t_sec, t_sec_det, t_ind, t_ind_det, t_ann, t_scr = tabs
+tabs = st.tabs(["Sector Rotation", "Sector Constituents", "Index Rotation", "Index Constituents", "SCAN MATCH", "Corp Announcements", "Screeners"])
+t_sec, t_sec_det, t_ind, t_ind_det, t_sm, t_ann, t_scr = tabs
 
 with t_sec: render_rotation_tab("Sector Rotation", "sector_data", "selected_sectors", "Industry")
 with t_sec_det: render_constituents_tab("Sector Constituents", "selected_sectors", "Industry")
 with t_ind: render_rotation_tab("Index Rotation", "index_data", "selected_indices", "Index")
 with t_ind_det: render_constituents_tab("Index Constituents", "selected_indices", "Index")
+with t_sm: render_scan_match_tab()
 
 with t_ann:
     st.header("Corporate Announcements")
