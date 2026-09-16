@@ -54,26 +54,20 @@ def clean_scores(scores):
 
 def fetch_constituents(name, scan_type="Industry"):
     """Fetches stock constituents for a given sector or index."""
-    url = "https://www.stockscans.in/api/company/market-scans/constituents"
+    url = "https://www.stockscans.in/api/scans/market/constituents"
     payload = json.dumps({
         "name": name,
         "marketScanType": scan_type,
         "timePeriod": "Latest"
     })
     headers = {
-        'accept': 'application/json',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/json',
-        'origin': 'https://www.stockscans.in',
-        'priority': 'u=1, i',
-        'referer': 'https://www.stockscans.in/market-scans',
-        'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-        'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+        'Referer': 'https://www.stockscans.in/market-scans',
+        'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        'sec-ch-ua-mobile': '?0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
         'Cookie': STOCKSCANS_COOKIE
     }
     try:
@@ -181,24 +175,19 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
     st.text("Underperforming → Persistent weakness remains")
 
     if st.button(f"Fetch {tab_name} Data"):
-        url = "https://www.stockscans.in/api/company/market-scans/table"
+        url = "https://www.stockscans.in/api/scans/market/run"
         payload = json.dumps({"marketScanType": scan_type, "timePeriod": "Latest"})
         headers = {
-          'accept': 'application/json',
-          'accept-language': 'en-US,en;q=0.9',
-          'content-type': 'application/json',
-          'origin': 'https://www.stockscans.in',
-          'priority': 'u=1, i',
-          'referer': 'https://www.stockscans.in/market-scans',
-          'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': '"Windows"',
-          'sec-fetch-dest': 'empty',
-          'sec-fetch-mode': 'cors',
-          'sec-fetch-site': 'same-origin',
-          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-          'Cookie': STOCKSCANS_COOKIE
+            'sec-ch-ua-platform': '"Windows"',
+            'Referer': 'https://www.stockscans.in/market-scans',
+            'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+            'sec-ch-ua-mobile': '?0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
         }
+        if STOCKSCANS_COOKIE:
+            headers['Cookie'] = STOCKSCANS_COOKIE
         with st.spinner("Fetching..."):
             try:
                 response = requests.request("POST", url, headers=headers, data=payload)
@@ -464,7 +453,16 @@ with t_ann:
                 for e in errs: st.error(e)
             else: st.error("Enter path.")
         
-        st.dataframe(disp_bse, column_config={"LINK": st.column_config.LinkColumn("PDF", display_text="Open")}, use_container_width=True, hide_index=True, key="bse_table")
+        st.dataframe(
+            disp_bse,
+            column_config={
+                "ATTACHMENTNAME": None,
+                "LINK": st.column_config.LinkColumn("PDF", display_text="Open")
+            },
+            use_container_width=True,
+            hide_index=True,
+            key="bse_table"
+        )
     elif st.session_state.get('bse_fetched'): st.info("No announcements found.")
 
 with t_scr:
