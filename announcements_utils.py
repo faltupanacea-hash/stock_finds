@@ -2,17 +2,36 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 
+try:
+    from curl_cffi import requests as c_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
 def get_bse_session():
-    """Initializes a requests Session with standard browser headers and session cookies from BSE home page."""
-    session = requests.Session()
-    session.headers.update({
+    """Initializes a requests/curl_cffi Session with standard browser headers and session cookies from BSE home page.
+    Uses curl_cffi for real Chrome TLS impersonation if available to bypass Cloudflare/WAF geoblocking on hosted servers.
+    """
+    headers = {
         'authority': 'api.bseindia.com',
         'accept': 'application/json, text/plain, */*',
         'accept-language': 'en-US,en;q=0.9',
         'origin': 'https://www.bseindia.com',
         'referer': 'https://www.bseindia.com/',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
+    }
+
+    if HAS_CURL_CFFI:
+        try:
+            session = c_requests.Session(impersonate="chrome120")
+            session.headers.update(headers)
+            session.get('https://www.bseindia.com/', timeout=10)
+            return session
+        except Exception as e:
+            print(f"curl_cffi session init failed, falling back to standard requests: {e}")
+
+    session = requests.Session()
+    session.headers.update(headers)
     try:
         session.get('https://www.bseindia.com/', timeout=10)
     except Exception as e:
@@ -198,8 +217,9 @@ def download_pdfs(df, download_dir):
         if os.path.exists(filepath):
             continue
             
+        session = get_bse_session()
         try:
-            response = requests.get(link, headers=headers, timeout=30)
+            response = session.get(link, headers=headers, timeout=30)
             if response.status_code == 200:
                 with open(filepath, 'wb') as f:
                     f.write(response.content)
@@ -241,6 +261,7 @@ def download_pdfs_to_zip(df):
     
     # Iterate through unique links to avoid duplicates
     unique_links = df[['LINK', 'SLONGNAME', 'TYPE']].drop_duplicates().to_dict('records')
+    session = get_bse_session()
     
     with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zip_file:
         for item in unique_links:
@@ -254,7 +275,7 @@ def download_pdfs_to_zip(df):
             filename = f"{safe_company}_{safe_type}_{link.split('/')[-1]}"
             
             try:
-                response = requests.get(link, headers=headers, timeout=30)
+                response = session.get(link, headers=headers, timeout=30)
                 if response.status_code == 200:
                     zip_file.writestr(filename, response.content)
                     downloaded_count += 1
