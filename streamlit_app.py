@@ -537,13 +537,9 @@ def render_scan_match_tab():
         st.info("Click 'Fetch SCAN MATCH Data' to load the latest scan-matched stocks.")
 
 # --- Tabs ---
-tabs = st.tabs(["Sector Rotation", "Sector Constituents", "Index Rotation", "Index Constituents", "SCAN MATCH", "Corp Announcements", "Screeners"])
-t_sec, t_sec_det, t_ind, t_ind_det, t_sm, t_ann, t_scr = tabs
+tabs = st.tabs(["SCAN MATCH", "Corp Announcements", "Screeners"])
+t_sm, t_ann, t_scr = tabs
 
-with t_sec: render_rotation_tab("Sector Rotation", "sector_data", "selected_sectors", "Industry")
-with t_sec_det: render_constituents_tab("Sector Constituents", "selected_sectors", "Industry")
-with t_ind: render_rotation_tab("Index Rotation", "index_data", "selected_indices", "Index")
-with t_ind_det: render_constituents_tab("Index Constituents", "selected_indices", "Index")
 with t_sm: render_scan_match_tab()
 
 with t_ann:
@@ -599,6 +595,7 @@ with t_ann:
 with t_scr:
     st.header("Imp Screeners")
     st.markdown("- [Go to Markets Dashboard](https://www.stockscans.in/market-scans/dashboard)")
+    st.markdown("- [Sector Rotation](https://bananapatterns.com/market/rotation#search)")
     st.write("Quick access to Chartink screeners and dashboards:")
     links = [("HVY Screener", "hvy-atfinallynitin"), ("MARS stocks", "159858"), ("Market Breadth Check1", "163999"), ("Market Breadth Check2", "149096")]
     for name, path in links:
