@@ -5,6 +5,12 @@ import os
 import pandas as pd
 from datetime import date, datetime, timedelta
 import announcements_utils
+import base64
+
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+except ImportError:
+    pdf_viewer = None
 
 # --- Page Config ---
 st.set_page_config(layout="wide")
@@ -30,11 +36,20 @@ states = {
     "index_data": None,
     "selected_indices": [],
     "interested_indices": [],
-    "cached_cons_index": None
+    "cached_cons_index": None,
+    "bse_data": pd.DataFrame(),
+    "selected_ann_row": None,
+    "bse_fetched": False,
+    "scan_match_data": None
 }
 for key, val in states.items():
     if key not in st.session_state:
         st.session_state[key] = val
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_cached_pdf_bytes(link):
+    """Fetches and caches PDF bytes for the embedded viewer."""
+    return announcements_utils.fetch_pdf_bytes(link)
 
 # --- Global Helpers ---
 def clean_scores(scores):
@@ -54,20 +69,26 @@ def clean_scores(scores):
 
 def fetch_constituents(name, scan_type="Industry"):
     """Fetches stock constituents for a given sector or index."""
-    url = "https://www.stockscans.in/api/scans/market/constituents"
+    url = "https://www.stockscans.in/api/company/market-scans/constituents"
     payload = json.dumps({
         "name": name,
         "marketScanType": scan_type,
         "timePeriod": "Latest"
     })
     headers = {
-        'sec-ch-ua-platform': '"Windows"',
-        'Referer': 'https://www.stockscans.in/market-scans',
-        'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+        'accept': 'application/json',
+        'accept-language': 'en-US,en;q=0.9',
+        'content-type': 'application/json',
+        'origin': 'https://www.stockscans.in',
+        'priority': 'u=1, i',
+        'referer': 'https://www.stockscans.in/market-scans',
+        'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
         'sec-ch-ua-mobile': '?0',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
         'Cookie': STOCKSCANS_COOKIE
     }
     try:
@@ -84,13 +105,17 @@ def get_fno_list():
     url = "https://www.nseindia.com/api/underlying-information"
     backup_file = "nse_fno_backup.json"
     headers = {
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Pragma': 'no-cache',
-        'Referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'accept': '*/*',
+        'accept-language': 'en-US,en;q=0.9,en-IN;q=0.8',
+        'priority': 'u=1, i',
+        'referer': 'https://www.nseindia.com/products-services/equity-derivatives-list-underlyings-information',
+        'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Microsoft Edge";v="144"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0'
     }
     
     import time
@@ -188,6 +213,7 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
         }
         if STOCKSCANS_COOKIE:
             headers['Cookie'] = STOCKSCANS_COOKIE
+
         with st.spinner("Fetching..."):
             try:
                 response = requests.request("POST", url, headers=headers, data=payload)
@@ -198,16 +224,9 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
                     if "historicScores" in df.columns:
                         df["historicScores"] = df["historicScores"].apply(clean_scores)
                     if "score" in df.columns:
-                        df["score"] = pd.to_numeric(df["score"], errors="coerce")
-                        df = df.sort_values(by="score", ascending=False).reset_index(drop=True)
+                        df = df.sort_values(by="score", ascending=False)
                     st.session_state[data_key] = df
-
-                    cb_key = f"{data_key}_select_gt_70"
-                    if st.session_state.get(cb_key):
-                        gt70_names = df[df["score"] > 70]["name"].tolist() if "score" in df.columns else []
-                        st.session_state[selection_key] = gt70_names
-                    else:
-                        st.session_state[selection_key] = []
+                    st.session_state[selection_key] = []
                 else:
                     st.warning("No data found.")
             except Exception as e:
@@ -215,36 +234,24 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
 
     if st.session_state[data_key] is not None:
         df = st.session_state[data_key].copy() # Copy to avoid mutation issues
-        if "score" in df.columns:
-            df["score"] = pd.to_numeric(df["score"], errors="coerce")
-
-        cb_key = f"{data_key}_select_gt_70"
-        name_filter_key = f"{data_key}_name_filter"
-
-        c_cb, c_filter, c_info = st.columns([1, 1, 2])
-        with c_cb:
-            select_gt_70 = st.checkbox("Select all with score > 70", key=cb_key)
-        with c_filter:
-            name_filter = st.text_input("Filter by Name", key=name_filter_key, placeholder="Search name...")
-
-        if name_filter.strip():
-            name_col = "name" if "name" in df.columns else next((c for c in df.columns if c.lower() == "name"), None)
-            if name_col:
-                df = df[df[name_col].astype(str).str.contains(name_filter.strip(), case=False, na=False)].reset_index(drop=True)
-
-        if select_gt_70:
-            if "score" in df.columns:
-                gt70_names = df[df["score"] > 70]["name"].tolist()
-                if st.session_state.get(selection_key) != gt70_names:
-                    st.session_state[selection_key] = gt70_names
-                    prefix = data_key.split('_')[0]
-                    st.session_state[f"interested_{prefix}s"] = []
-
-        current_selected = st.session_state.get(selection_key, [])
-        if current_selected:
-            with c_info:
-                st.caption(f"Selected ({len(current_selected)}): {', '.join(current_selected)}")
-
+        
+        # Filter logic if it's the Index Rotation tab
+        if scan_type == "Index":
+            # Add a text input or checkbox for filtering
+            col_f1, col_f2 = st.columns([3, 1])
+            with col_f1:
+                filter_query = st.text_input("Filter by Index Name (use '/' or '|' or ',' for multiple, e.g. BSE/NIFTY)", value="NIFTY", key="index_name_filter_query")
+            with col_f2:
+                apply_filter = st.checkbox("Apply Filter", value=True, key="index_name_filter_apply")
+                
+            if apply_filter and filter_query:
+                # Split the filter_query and strip whitespace
+                patterns = [p.strip().lower() for p in filter_query.replace('|', '/').replace(',', '/').split('/') if p.strip()]
+                if patterns:
+                    # Filter rows where name contains any of the patterns
+                    mask = df["name"].astype(str).str.lower().apply(lambda x: any(pat in x for pat in patterns))
+                    df = df[mask]
+        
         column_config = {
             "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")
         }
@@ -275,22 +282,21 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
             column_config=column_config,
             use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row", key=f"{data_key}_table"
         )
-
-        if not select_gt_70:
-            if event.selection.rows:
-                new_selection = df.iloc[event.selection.rows]["name"].tolist()
-                if new_selection != st.session_state[selection_key]:
-                    st.session_state[selection_key] = new_selection
-                    prefix = data_key.split('_')[0]
-                    st.session_state[f"interested_{prefix}s"] = []
-            else:
-                if st.session_state[selection_key]:
-                    st.session_state[selection_key] = []
-                    prefix = data_key.split('_')[0]
-                    st.session_state[f"interested_{prefix}s"] = []
+        if event.selection.rows:
+            new_selection = df.iloc[event.selection.rows]["name"].tolist()
+            if new_selection != st.session_state[selection_key]:
+                st.session_state[selection_key] = new_selection
+                # Clear interested list when parent selection changes
+                # data_key is 'sector_data' or 'index_data'
+                prefix = data_key.split('_')[0] # 'sector' or 'index'
+                st.session_state[f"interested_{prefix}s"] = []
+        else:
+            if st.session_state[selection_key]:
+                st.session_state[selection_key] = []
+                prefix = data_key.split('_')[0]
+                st.session_state[f"interested_{prefix}s"] = []
     else:
         st.info(f"Click 'Fetch {tab_name} Data' to load.")
-
 
 def render_constituents_tab(header, selection_key, scan_type):
     st.header(header)
@@ -405,6 +411,86 @@ def render_constituents_tab(header, selection_key, scan_type):
                 st.code(interested_string, language="")
     else:
         st.info("Select items in the rotation tab first.")
+
+def render_announcement_pdf_viewer(selected_row):
+    """Renders the embedded PDF viewer card for the selected corporate announcement."""
+    if not selected_row:
+        st.info("👈 **No announcement selected.** Click on any row in the table to open its PDF directly in this embedded viewer.")
+        return
+
+    link = selected_row.get("LINK", "")
+    company = selected_row.get("SLONGNAME", "Company Announcement")
+    atype = selected_row.get("TYPE", "Announcement")
+    headline = selected_row.get("HEADLINE", "")
+    subcat = selected_row.get("SUBCATNAME", "")
+    dissem_dt = selected_row.get("DissemDT", "")
+    newssub = selected_row.get("NEWSSUB", "")
+    
+    # Header display card
+    st.markdown(
+        f"""
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <h4 style="margin: 0; color: #1e293b; font-weight: 700;">🏢 {company}</h4>
+                <span style="background-color: #2563eb; color: #ffffff; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600;">{atype}</span>
+            </div>
+            <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">
+                <strong>Date & Time:</strong> {dissem_dt} &nbsp;|&nbsp; <strong>Subcategory:</strong> {subcat}
+            </div>
+            {f'<div style="font-size: 13px; color: #334155;"><strong>Subject:</strong> {newssub}</div>' if newssub and newssub != '-' else ''}
+            {f'<div style="font-size: 13px; color: #334155;"><strong>Headline:</strong> {headline}</div>' if headline and headline != newssub else ''}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if not link:
+        st.warning("No PDF attachment link is available for this announcement.")
+        return
+
+    # PDF Action Controls
+    ctl1, ctl2, ctl3, ctl4 = st.columns([2, 2, 2, 1])
+    with ctl2:
+        st.link_button("🌐 Open BSE URL", link, use_container_width=True)
+    with ctl3:
+        engine = st.selectbox("Viewer Type", ["Interactive (PDF.js)", "Native Embed"], key="pdf_view_engine", label_visibility="collapsed")
+    with ctl4:
+        if st.button("✖ Close", key="btn_close_pdf", use_container_width=True):
+            st.session_state["selected_ann_row"] = None
+            st.rerun()
+
+    with st.spinner("Fetching PDF attachment from BSE..."):
+        pdf_bytes = get_cached_pdf_bytes(link)
+
+    if pdf_bytes:
+        safe_company = "".join([c for c in company if c.isalnum() or c in (' ', '-', '_')]).strip()
+        safe_type = "".join([c for c in atype if c.isalnum() or c in (' ', '-', '_')]).strip()
+        raw_name = link.split('/')[-1]
+        pdf_filename = f"{safe_company}_{safe_type}_{raw_name}"
+
+        with ctl1:
+            st.download_button(
+                label="📥 Download PDF",
+                data=pdf_bytes,
+                file_name=pdf_filename,
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+        if engine == "Interactive (PDF.js)" and pdf_viewer is not None:
+            try:
+                pdf_viewer(input=pdf_bytes, width="100%", height=800, render_text=True)
+            except Exception as e:
+                st.warning(f"Interactive viewer fallback: {e}")
+                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+                pdf_html = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=1" width="100%" height="800px" style="border:1px solid #cbd5e1; border-radius:6px;"></iframe>'
+                st.components.v1.html(pdf_html, height=820)
+        else:
+            base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+            pdf_html = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=1" width="100%" height="800px" style="border:1px solid #cbd5e1; border-radius:6px;"></iframe>'
+            st.components.v1.html(pdf_html, height=820)
+    else:
+        st.error(f"Unable to fetch PDF from BSE. You can try viewing it directly: [Open BSE Link]({link})")
 
 def fetch_scan_matched_stocks():
     """Fetches most scan-matched stocks from stockscans.in API."""
@@ -544,60 +630,109 @@ with t_sm: render_scan_match_tab()
 
 with t_ann:
     st.header("Corporate Announcements")
-    c1, c2 = st.columns(2)
-    with c1: d_from = st.date_input("From Date", date.today())
-    with c2: d_to = st.date_input("To Date", date.today())
-    if 'bse_data' not in st.session_state: st.session_state['bse_data'] = pd.DataFrame()
-    if st.button("Fetch Announcements"):
-        with st.spinner("Fetching..."):
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1: d_from = st.date_input("From Date", date.today() - timedelta(days=1), key="ann_date_from")
+    with c2: d_to = st.date_input("To Date", date.today(), key="ann_date_to")
+    with c3:
+        st.write("")
+        st.write("")
+        fetch_clicked = st.button("Fetch Announcements", use_container_width=True, type="primary")
+
+    if fetch_clicked:
+        with st.spinner("Fetching corporate announcements from BSE..."):
             st.session_state['bse_data'] = announcements_utils.get_bse_announcements(d_from, d_to)
             st.session_state['bse_fetched'] = True
-    bse_df = st.session_state['bse_data']
+            st.session_state['selected_ann_row'] = None
+
+    bse_df = st.session_state.get('bse_data', pd.DataFrame())
     if not bse_df.empty:
         st.success(f"Found {len(bse_df)} announcements.")
         
-        f_c1, f_c2 = st.columns([1, 2])
-        with f_c1:
-            types = ["All"] + sorted(bse_df['TYPE'].unique().tolist())
-            sel_type = st.selectbox("Filter Type", types)
-        with f_c2:
-            search_query = st.text_input("Filter Announcements by Keyword", placeholder="Search company, headline, subject, attachment...")
-        
-        disp_bse = bse_df if sel_type == "All" else bse_df[bse_df['TYPE'] == sel_type]
+        col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
+        with col_f1:
+            types = ["All"] + sorted(bse_df['TYPE'].dropna().unique().tolist())
+            sel_type = st.selectbox("Filter by Category / Type", types, key="ann_filter_type")
+        with col_f2:
+            search_query = st.text_input("Search Company / Subject", "", placeholder="e.g. Tata, Dividend, Bonus...", key="ann_search_query")
+        with col_f3:
+            layout_view = st.radio("Viewer Layout", ["Side-by-Side", "Stacked (Below Table)"], horizontal=True, key="ann_layout_view")
+            
+        disp_bse = bse_df.copy()
+        if sel_type != "All":
+            disp_bse = disp_bse[disp_bse['TYPE'] == sel_type]
         if search_query.strip():
             sq = search_query.strip().lower()
-            disp_bse = disp_bse[
-                disp_bse.astype(str).apply(lambda row: row.str.lower().str.contains(sq).any(), axis=1)
-            ]
-            
-        dl_path = st.text_input("Local Download Folder Path")
-        if st.button("Download PDFs"):
-            if dl_path:
-                path = dl_path.strip().strip('"').strip("'")
-                if not os.path.exists(path): os.makedirs(path)
-                count, errs = announcements_utils.download_pdfs(disp_bse, path)
-                if count > 0: st.success(f"Downloaded {count} files.")
-                for e in errs: st.error(e)
-            else: st.error("Enter path.")
-        
-        st.dataframe(
-            disp_bse,
-            column_config={
-                "ATTACHMENTNAME": None,
-                "LINK": st.column_config.LinkColumn("PDF", display_text="Open")
-            },
-            use_container_width=True,
-            hide_index=True,
-            key="bse_table"
-        )
-    elif st.session_state.get('bse_fetched'): st.info("No announcements found.")
+            mask = (
+                disp_bse['SLONGNAME'].astype(str).str.lower().str.contains(sq, na=False) |
+                disp_bse['NEWSSUB'].astype(str).str.lower().str.contains(sq, na=False) |
+                disp_bse['HEADLINE'].astype(str).str.lower().str.contains(sq, na=False)
+            )
+            disp_bse = disp_bse[mask]
+
+        # Bulk download expander
+        with st.expander("📦 Bulk Download Options"):
+            dl_path = st.text_input("Local Download Folder Path", key="ann_dl_path")
+            if st.button("Download Filtered PDFs to Folder", key="ann_dl_btn"):
+                if dl_path:
+                    path = dl_path.strip().strip('"').strip("'")
+                    if not os.path.exists(path): os.makedirs(path)
+                    count, errs = announcements_utils.download_pdfs(disp_bse, path)
+                    if count > 0: st.success(f"Downloaded {count} files.")
+                    for e in errs: st.error(e)
+                else: st.error("Enter path.")
+
+        column_config = {
+            "LINK": st.column_config.LinkColumn("BSE Link", display_text="Open BSE")
+        }
+
+        st.caption("💡 **Tip**: Click on any row in the table below to immediately view the PDF in the embedded viewer.")
+
+        if layout_view == "Side-by-Side":
+            col_table, col_pdf = st.columns([1, 1], gap="medium")
+            with col_table:
+                event = st.dataframe(
+                    disp_bse,
+                    column_config=column_config,
+                    use_container_width=True,
+                    hide_index=True,
+                    selection_mode="single-row",
+                    on_select="rerun",
+                    key="bse_table_side"
+                )
+                if event.selection.rows:
+                    sel_idx = event.selection.rows[0]
+                    if sel_idx < len(disp_bse):
+                        st.session_state['selected_ann_row'] = disp_bse.iloc[sel_idx].to_dict()
+
+            with col_pdf:
+                render_announcement_pdf_viewer(st.session_state.get('selected_ann_row'))
+        else:
+            event = st.dataframe(
+                disp_bse,
+                column_config=column_config,
+                use_container_width=True,
+                hide_index=True,
+                selection_mode="single-row",
+                on_select="rerun",
+                key="bse_table_stacked"
+            )
+            if event.selection.rows:
+                sel_idx = event.selection.rows[0]
+                if sel_idx < len(disp_bse):
+                    st.session_state['selected_ann_row'] = disp_bse.iloc[sel_idx].to_dict()
+
+            st.divider()
+            render_announcement_pdf_viewer(st.session_state.get('selected_ann_row'))
+
+    elif st.session_state.get('bse_fetched'):
+        st.info("No announcements found for the selected date range.")
 
 with t_scr:
     st.header("Imp Screeners")
     st.markdown("- [Go to Markets Dashboard](https://www.stockscans.in/market-scans/dashboard)")
     st.markdown("- [Sector Rotation](https://bananapatterns.com/market/rotation#search)")
     st.write("Quick access to Chartink screeners and dashboards:")
-    links = [("HVY Screener", "hvy-atfinallynitin"), ("MARS stocks", "159858"), ("Market Breadth Check1", "163999"), ("Market Breadth Check2", "149096")]
+    links = [("HVY Screener", "hvy-atfinallynitin"), ("MARS stocks", "159858"), ("Market Breadth Check1", "163999"), ("Market Breadth Check 2", "149096")]
     for name, path in links:
         url = f"https://chartink.com/{'screener' if '-' in path else 'dashboard'}/{path}"
         st.markdown(f"- [{name}]({url})")
