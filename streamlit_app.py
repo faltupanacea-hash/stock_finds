@@ -688,7 +688,7 @@ with t_ann:
         st.caption("💡 **Tip**: Click on any row in the table below to immediately view the PDF in the embedded viewer.")
 
         if layout_view == "Side-by-Side":
-            col_table, col_pdf = st.columns([1, 1], gap="medium")
+            col_table, col_pdf = st.columns([1, 3], gap="medium")
             with col_table:
                 event = st.dataframe(
                     disp_bse,
