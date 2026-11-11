@@ -72,34 +72,74 @@ def clean_scores(scores):
                 cleaned.append(float(s))
     return cleaned
 
-def fetch_constituents(name, scan_type="Industry"):
-    """Fetches stock constituents for a given sector or index."""
-    url = "https://www.stockscans.in/api/company/market-scans/constituents"
-    payload = json.dumps({
-        "name": name,
-        "marketScanType": scan_type,
-        "timePeriod": "Latest"
-    })
+def fetch_constituents(name, scan_type="Industry", as_of=None, tf="6m"):
+    """Fetches stock constituents for a given sector/industry or index using the series-all API."""
+    kind = "industry" if str(scan_type).lower() in ["industry", "sector"] else "index"
+    
+    # Resolve index name to key if needed (e.g. 'Nifty Private Bank' -> 'NSE:NIFPVTBANK')
+    target_key = name
+    if kind == "index":
+        if not (str(name).startswith("NSE:") or str(name).startswith("BSE:")):
+            index_df = st.session_state.get("index_data")
+            if index_df is not None and not index_df.empty:
+                match = index_df[index_df["name"] == name]
+                if not match.empty and "key" in match.columns:
+                    target_key = match.iloc[0]["key"]
+
+    if as_of is None:
+        prefix = "sector" if kind == "industry" else "index"
+        as_of = st.session_state.get(f"{prefix}_as_of") or date.today().strftime('%Y-%m-%d')
+
+    url = "https://www.stockscans.in/api/scans/market/scores/series-all"
+    params = {
+        "kind": kind,
+        "tf": tf,
+        "asOf": as_of,
+        "key": target_key
+    }
     headers = {
         'accept': 'application/json',
-        'accept-language': 'en-US,en;q=0.9',
+        'accept-language': 'en-US,en;q=0.9,hi;q=0.8',
         'content-type': 'application/json',
-        'origin': 'https://www.stockscans.in',
         'priority': 'u=1, i',
-        'referer': 'https://www.stockscans.in/market-scans',
-        'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+        'referer': f'https://www.stockscans.in/market-scans?{kind}={target_key}',
+        'sec-ch-ua': '"Not:A-Brand";v="8", "Chromium";v="156", "Google Chrome";v="156"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-origin',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-        'Cookie': STOCKSCANS_COOKIE
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+        'x-sync-source': 'lzia4recmwc4chti',
+        'Cookie': STOCKSCANS_COOKIE or get_auth_cookie()
     }
     try:
-        response = requests.request("POST", url, headers=headers, data=payload)
+        response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        
+        # Build tabular structure for compatibility with render_constituents_tab
+        series_list = data.get("series", [])
+        table_rows = []
+        for s in series_list:
+            raw_key = s.get("key", "")
+            # Extract plain symbol without 'NSE:' or 'BSE:' prefix for easy copying and trading
+            symbol = raw_key.split(":")[-1] if ":" in raw_key else raw_key
+            scores = s.get("scores", [])
+            latest_score = scores[-1] if scores else None
+            
+            table_rows.append({
+                "symbol": symbol,
+                "name": s.get("name", ""),
+                "score": latest_score,
+                "status": s.get("status", ""),
+                "seedStatus": s.get("seedStatus", ""),
+                "historicScores": clean_scores(scores),
+                "key": raw_key
+            })
+            
+        data["table"] = table_rows
+        return data
     except Exception as e:
         st.error(f"Error fetching constituents for {name}: {e}")
         return None
@@ -204,34 +244,42 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
     st.text("Consolidating → Momentum is slowing down")
     st.text("Underperforming → Persistent weakness remains")
 
+    kind = "industry" if str(scan_type).lower() in ["industry", "sector"] else "index"
+
     if st.button(f"Fetch {tab_name} Data"):
-        url = "https://www.stockscans.in/api/scans/market/run"
-        payload = json.dumps({"marketScanType": scan_type, "timePeriod": "Latest"})
+        url = f"https://www.stockscans.in/api/scans/market/scores?kind={kind}"
         headers = {
-            'sec-ch-ua-platform': '"Windows"',
-            'Referer': 'https://www.stockscans.in/market-scans',
-            'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+            'accept': 'application/json',
+            'accept-language': 'en-US,en;q=0.9,hi;q=0.8',
+            'content-type': 'application/json',
+            'priority': 'u=1, i',
+            'referer': 'https://www.stockscans.in/market-scans',
+            'sec-ch-ua': '"Not:A-Brand";v="8", "Chromium";v="156", "Google Chrome";v="156"',
             'sec-ch-ua-mobile': '?0',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+            'x-sync-source': 'lzia4recmwc4chti',
+            'Cookie': STOCKSCANS_COOKIE or get_auth_cookie()
         }
-        if STOCKSCANS_COOKIE:
-            headers['Cookie'] = STOCKSCANS_COOKIE
 
         with st.spinner("Fetching..."):
             try:
-                response = requests.request("POST", url, headers=headers, data=payload)
+                response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-                if data and "table" in data:
-                    df = pd.DataFrame(data["table"])
-                    if "historicScores" in df.columns:
-                        df["historicScores"] = df["historicScores"].apply(clean_scores)
+                rows = data.get("rows", [])
+                if rows:
+                    df = pd.DataFrame(rows)
                     if "score" in df.columns:
                         df = df.sort_values(by="score", ascending=False)
                     st.session_state[data_key] = df
                     st.session_state[selection_key] = []
+                    if "date" in data:
+                        prefix = data_key.split('_')[0]
+                        st.session_state[f"{prefix}_as_of"] = data["date"]
                 else:
                     st.warning("No data found.")
             except Exception as e:
@@ -240,7 +288,7 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
     if st.session_state[data_key] is not None:
         df = st.session_state[data_key].copy() # Copy to avoid mutation issues
         
-        # Filter logic if it's the Index Rotation tab
+        # Filter logic if it's the Index Rotation tab or Industry Rotation tab
         if scan_type == "Index":
             # Add a text input or checkbox for filtering
             col_f1, col_f2 = st.columns([3, 1])
@@ -256,10 +304,29 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
                     # Filter rows where name contains any of the patterns
                     mask = df["name"].astype(str).str.lower().apply(lambda x: any(pat in x for pat in patterns))
                     df = df[mask]
+        else:
+            col_f1, col_f2 = st.columns([3, 1])
+            with col_f1:
+                filter_query = st.text_input("Filter by Name / Parent", value="", key=f"{data_key}_filter_query", placeholder="e.g. Capital, Auto, Tech...")
+            with col_f2:
+                status_filter = st.selectbox("Status Filter", ["All", "outperforming", "accumulating", "consolidating", "underperforming"], key=f"{data_key}_status_filter")
+            
+            if filter_query:
+                patterns = [p.strip().lower() for p in filter_query.replace('|', '/').replace(',', '/').split('/') if p.strip()]
+                if patterns:
+                    mask = df["name"].astype(str).str.lower().apply(lambda x: any(pat in x for pat in patterns))
+                    if "parent" in df.columns:
+                        mask = mask | df["parent"].astype(str).str.lower().apply(lambda x: any(pat in x for pat in patterns))
+                    df = df[mask]
+            if status_filter != "All" and "status" in df.columns:
+                df = df[df["status"] == status_filter]
         
         column_config = {
-            "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")
+            "score": st.column_config.NumberColumn("Score", format="%.2f"),
+            "rawScore": st.column_config.NumberColumn("Raw Score", format="%.2f"),
         }
+        if "historicScores" in df.columns:
+            column_config["historicScores"] = st.column_config.LineChartColumn("Historic Scores (1M)", width="medium")
 
         # Handle ID Column Hyperlinking
         id_col = next((c for c in df.columns if c.lower() in ["companyid", "symbol", "id"]), None)
@@ -292,7 +359,6 @@ def render_rotation_tab(tab_name, data_key, selection_key, scan_type):
             if new_selection != st.session_state[selection_key]:
                 st.session_state[selection_key] = new_selection
                 # Clear interested list when parent selection changes
-                # data_key is 'sector_data' or 'index_data'
                 prefix = data_key.split('_')[0] # 'sector' or 'index'
                 st.session_state[f"interested_{prefix}s"] = []
         else:
@@ -318,8 +384,10 @@ def render_constituents_tab(header, selection_key, scan_type):
             st.write(f"Aggregating data for: {', '.join(selected)}")
             all_dfs = []
             progress = st.progress(0)
+            prefix = "sector" if str(scan_type).lower() in ["industry", "sector"] else "index"
+            as_of_val = st.session_state.get(f"{prefix}_as_of")
             for i, name in enumerate(selected):
-                data = fetch_constituents(name, scan_type=scan_type)
+                data = fetch_constituents(name, scan_type=scan_type, as_of=as_of_val)
                 if data and "table" in data:
                     sdf = pd.DataFrame(data["table"])
                     if "historicScores" in sdf.columns:
@@ -366,6 +434,10 @@ def render_constituents_tab(header, selection_key, scan_type):
             else:
                 styled_df = display_df
 
+            status_col = next((c for c in display_df.columns if c.lower() == "status"), None)
+            if status_col:
+                styled_df = styled_df.map(get_status_color, subset=[status_col])
+
             event = st.dataframe(
                 styled_df, 
                 use_container_width=True, 
@@ -374,6 +446,7 @@ def render_constituents_tab(header, selection_key, scan_type):
                 on_select="rerun", # Keep "rerun" but data is now cached so it's fast
                 selection_mode="multi-row",
                 column_config={
+                    "score": st.column_config.NumberColumn("Score", format="%.2f"),
                     "historicScores": st.column_config.LineChartColumn("Historic Scores (1M)", width="medium"), 
                     "TV Link": st.column_config.LinkColumn("TradingView", display_text=r"symbol=(.*)")
                 }
@@ -1168,8 +1241,22 @@ def render_concall_tab():
         st.info("Click 'Fetch Concalls Data' to load earnings conference call summaries.")
 
 # --- Tabs ---
-tabs = st.tabs(["SCAN MATCH", "Concalls", "Corp Announcements", "Screeners"])
-t_sm, t_cc, t_ann, t_scr = tabs
+tabs = st.tabs([
+    "Sector Rotation",
+    "Sector Constituents",
+    "Index Rotation",
+    "Index Constituents",
+    "SCAN MATCH",
+    "Concalls",
+    "Corp Announcements",
+    "Screeners"
+])
+t_sec, t_sec_det, t_ind, t_ind_det, t_sm, t_cc, t_ann, t_scr = tabs
+
+with t_sec: render_rotation_tab("Sector Rotation", "sector_data", "selected_sectors", "Industry")
+with t_sec_det: render_constituents_tab("Sector Constituents", "selected_sectors", "Industry")
+with t_ind: render_rotation_tab("Index Rotation", "index_data", "selected_indices", "Index")
+with t_ind_det: render_constituents_tab("Index Constituents", "selected_indices", "Index")
 
 with t_sm: render_scan_match_tab()
 with t_cc: render_concall_tab()
